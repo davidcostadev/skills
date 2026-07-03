@@ -4,8 +4,8 @@
 // Runs complexity (eslint complexity rules), duplication (jscpd), eslint,
 // prettier and tsc, but only reports findings that touch the lines a PR/branch
 // actually changed. It writes a machine-readable report.json plus a human
-// summary.md under
-// <E2S_ROOT>/pr-reviews/<repo>-<id>/. This is the objective half of PR review;
+// summary.md under <tmpdir>/pr-reviews/<repo>-<id>/ (outside the repo, so
+// nothing dirties the working tree). This is the objective half of PR review;
 // the Claude "pr-review" skill consumes report.json to write a CodeRabbit-style
 // review with fix prompts.
 //
@@ -13,9 +13,10 @@
 // (or check the branch out) so the analyzed code matches the diff. With --pr the
 // script warns if the current branch is not the PR head.
 //
-// Usage: scripts/pr-review.mjs --repo <api|admin|app|eats2seats-...> [target] [flags]
+// Usage: pr-review.mjs [--repo <path>] [target] [flags]
+//   --repo <path>       Path to the git repo to review           (default: current repo)
 //   --pr <n>            Diff via `gh pr diff <n>`
-//   --base <ref>        Diff = git diff <base>...HEAD            (default: origin/dev)
+//   --base <ref>        Diff = git diff <base>...HEAD            (default: origin's default branch)
 //   --head <ref>        New side of the diff                     (default: HEAD)
 //   --working-tree      Diff = uncommitted work vs HEAD (staged + unstaged + new files)
 //   --staged            Diff = staged changes vs HEAD (the index)
@@ -25,15 +26,13 @@
 //   --ccn <n>           Cyclomatic-complexity threshold          (default: 15)
 //   --simple            Print the full summary.md to stdout
 //   --json              Print report.json to stdout
-//   --out <dir>         Output dir (default: <E2S_ROOT>/pr-reviews/<repo>-<id>/)
+//   --out <dir>         Output dir (default: <tmpdir>/pr-reviews/<repo>-<id>/)
 //   --help
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
-
-const E2S_ROOT = '/home/davidcostadevr/scrumlaunch/e2s';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 const ANALYZABLE = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
 const TEST = /\.(spec|test)\.(ts|tsx|js|jsx)$/;
 // ESLint rules driven as the complexity layer (typescript-eslint parses TS
@@ -44,12 +43,10 @@ const COMPLEXITY_RULES = {
   'max-params': 'low',
 };
 const SKIP = [
-  /\/src\/gql\//,
-  /(^|\/)dist\//,
-  /(^|\/)node_modules\//,
-  /(^|\/)\.next\//,
+  /(^|\/)(node_modules|dist|build|coverage|\.next)\//,
   /\.gen\.(ts|tsx|js)$/,
-  /(^|\/)schema\.gql$/,
+  /\.generated\./,
+  /(^|\/)__generated__\//,
 ];
 
 const C = {
@@ -68,7 +65,8 @@ function parseArgs(argv) {
   const o = {
     repo: '',
     pr: '',
-    base: 'origin/dev',
+    base: '', // resolved to origin's default branch when needed
+
     head: 'HEAD',
     workingTree: false,
     staged: false,
@@ -116,14 +114,17 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  process.stdout.write(`Usage: scripts/pr-review.mjs --repo <api|admin|app|eats2seats-...> [target] [flags]
+  process.stdout.write(`Usage: pr-review.mjs [--repo <path>] [target] [flags]
 
 Diff-scoped static analysis (complexity, duplication, eslint, prettier, tsc).
-Writes report.json + summary.md to <E2S_ROOT>/pr-reviews/<repo>-<id>/.
+Writes report.json + summary.md to <tmpdir>/pr-reviews/<repo>-<id>/.
+
+Repo:
+  --repo <path>       Path to the git repo to review  (default: current repo)
 
 Target (pick one):
   --pr <n>            Diff via 'gh pr diff <n>'
-  --base <ref>        Diff = git diff <base>...HEAD   (default: origin/dev)
+  --base <ref>        Diff = git diff <base>...HEAD   (default: origin's default branch)
   --head <ref>        New side of the diff            (default: HEAD)
   --working-tree      Uncommitted work vs HEAD (staged + unstaged + new files)
   --staged            Staged changes vs HEAD (the index)
@@ -141,10 +142,9 @@ Output:
   --help
 
 Examples:
-  scripts/pr-review.mjs --repo api --base origin/dev --simple
-  scripts/pr-review.mjs --repo eats2seats-api_ETS-1903 --base origin/dev
-  scripts/pr-review.mjs --repo admin --pr 412 --json
-  scripts/pr-review.mjs --repo api --working-tree --simple   # review uncommitted WIP before commit
+  pr-review.mjs --base origin/main --simple
+  pr-review.mjs --repo ../other-repo --pr 412 --json
+  pr-review.mjs --working-tree --simple   # review uncommitted WIP before commit
 `);
 }
 
@@ -172,13 +172,27 @@ function run(cmd, args, cwd, timeout = 180000) {
 
 // ----------------------------------------------------------------------------- repo
 function resolveRepo(name) {
-  if (!name) die('--repo is required (api | admin | app | eats2seats-...)');
-  const map = { api: 'eats2seats-api', admin: 'eats2seats-admin', app: 'eats2seats-app' };
-  const full = map[name] ?? (name.startsWith('eats2seats-') ? name : `eats2seats-${name}`);
-  const dir = join(E2S_ROOT, full);
-  if (!existsSync(dir)) die(`repo directory not found: ${dir}`);
-  if (!existsSync(join(dir, '.git'))) die(`not a git repo: ${dir}`);
-  return { name: full, short: full.replace(/^eats2seats-/, ''), dir };
+  let dir;
+  if (name) {
+    dir = resolve(name);
+    if (!existsSync(dir)) die(`repo directory not found: ${dir}`);
+    if (!existsSync(join(dir, '.git'))) die(`not a git repo: ${dir}`);
+  } else {
+    const top = run('git', ['rev-parse', '--show-toplevel'], process.cwd());
+    if (top.code !== 0) die('not inside a git repo (pass --repo <path>)');
+    dir = top.stdout.trim();
+  }
+  return { name: basename(dir), dir };
+}
+
+// origin's default branch (origin/HEAD), falling back to origin/main|master.
+function defaultBase(repoDir) {
+  const r = run('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoDir);
+  if (r.code === 0 && r.stdout.trim()) return r.stdout.trim();
+  for (const c of ['origin/main', 'origin/master']) {
+    if (run('git', ['rev-parse', '--verify', '--quiet', c], repoDir).code === 0) return c;
+  }
+  die('could not detect the default base branch; pass --base <ref>');
 }
 
 // ----------------------------------------------------------------------------- diff
@@ -346,14 +360,14 @@ function runDup(changedAbs, changed, o, notes, srcFiles) {
   const out = join(tmpdir(), `jscpd-${process.pid}`);
   rmSync(out, { recursive: true, force: true });
   const scan = existsSync(join(cwdRepo, 'src')) ? 'src' : '.';
-  const r = run('pnpm', [
+  const r = run('npx', [
     // Pinned to v4: jscpd@5 is a rewrite with an incompatible CLI (no --ignore)
     // and a different report format.
-    'dlx', 'jscpd@4', scan,
+    '--yes', 'jscpd@4', scan,
     '--reporters', 'json', '--silent', '--mode', 'mild',
     '--min-lines', '5', '--min-tokens', '50',
     '--output', out,
-    '--ignore', '**/node_modules/**,**/dist/**,**/.next/**,**/*.spec.ts,**/*.test.ts,**/src/gql/**',
+    '--ignore', '**/node_modules/**,**/dist/**,**/build/**,**/coverage/**,**/.next/**,**/*.spec.*,**/*.test.*,**/__generated__/**',
   ], cwdRepo, 240000);
   const reportPath = join(out, 'jscpd-report.json');
   if (!existsSync(reportPath)) {
@@ -403,7 +417,7 @@ function runPrettier(files, notes) {
     const f = line.trim();
     if (!f) continue;
     findings.push(mk('prettier', 'low', relOrName(f), 0, 0, 'formatting',
-      'File is not formatted. Run pnpm format.', ''));
+      'File is not formatted. Run prettier --write on it.', ''));
   }
   return findings;
 }
@@ -489,6 +503,9 @@ function main() {
   const repo = resolveRepo(o.repo);
   cwdRepo = repo.dir;
 
+  // Branch mode diffs against a base ref; the other modes carry their own anchor.
+  if (!o.base && !o.pr && !o.workingTree && !o.staged) o.base = defaultBase(cwdRepo);
+
   const { diffText, label } = getDiff(o, repo);
   const changed = parseDiff(diffText);
 
@@ -503,10 +520,10 @@ function main() {
     : o.staged ? `staged-${branchName}`
     : o.workingTree ? `worktree-${branchName}`
     : `branch-${branchName}`;
-  const outDir = o.out ? resolve(o.out) : join(E2S_ROOT, 'pr-reviews', `${repo.short}-${id}`);
+  const outDir = o.out ? resolve(o.out) : join(tmpdir(), 'pr-reviews', `${repo.name}-${id}`);
 
   // Effective base/head shown in the report (working-tree modes diff against HEAD on disk).
-  const reportBase = (o.workingTree || o.staged) ? 'HEAD' : o.base;
+  const reportBase = (o.workingTree || o.staged) ? 'HEAD' : (o.base || 'PR base');
   const reportHead = o.staged ? 'index (staged)' : o.workingTree ? 'working tree' : o.head;
 
   const notes = [];

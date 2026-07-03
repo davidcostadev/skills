@@ -59,7 +59,7 @@ working_dir: <cwd>
 title: <Human-readable title>
 slug: <kebab-case slug>
 duration_estimate: <"short" | "medium" | "long" — based on message count>
-related_tickets: [<ETS-XXX>, ...]   # if any mentioned, else omit
+related_tickets: [<TICKET-123>, ...]   # if any mentioned, else omit
 ---
 
 # <Human-readable title>
@@ -120,7 +120,7 @@ related_tickets: [<ETS-XXX>, ...]   # if any mentioned, else omit
 
 Print one confirmation line with the absolute path:
 ```
-Sessao guardada em /home/davidcostadevr/.claude/chats/YYYY-MM-DD-<slug>.md
+Sessao guardada em ~/.claude/chats/YYYY-MM-DD-<slug>.md
 ```
 
 Best-effort: if a Stop/SessionEnd hook logged this session as pending and that log file exists, drop the entry (no-op if the file is absent):

@@ -2,14 +2,14 @@
 name: pr-review
 description: Review a PR, branch, or uncommitted working-tree diff CodeRabbit-style - run the diff-scoped static analyzer (scripts/pr-review.mjs), then write a structured review with findings grouped by severity (file:line + a suggested fix) and one consolidated "Prompt for AI Agents" block that lists the fix for every comment. No walkthrough. Use when the user says "revisar PR", "review this PR/diff", "review my current work", "code review estilo coderabbit", or runs /pr-review.
 metadata:
-  author: e2s
-  version: "1.0"
+  author: davidcostadev
+  version: "1.1"
 ---
 
 Review a pull request (or a branch diff) and produce a CodeRabbit-style review.
 
 There are two layers:
-- **The script** (`scripts/pr-review.mjs`) is the objective layer - complexity, duplication, eslint, prettier and tsc, scoped to the changed lines. It writes `report.json` + `summary.md`. Run it; do not redo its work by hand.
+- **The script** (`scripts/pr-review.mjs`, bundled next to this SKILL.md) is the objective layer - complexity, duplication, eslint, prettier and tsc, scoped to the changed lines. It writes `report.json` + `summary.md`. Run it; do not redo its work by hand.
 - **This skill** is the judgment layer - read the script output plus the raw diff, add the things a static tool cannot see (logic bugs, edge cases, races, missing tests, naming, design), and write `review.md`.
 
 ## CRITICAL: write everything in simple English
@@ -20,33 +20,33 @@ Every word you write in the review - finding explanations and the "Prompt for AI
 - No jargon unless it is a real code term. No filler, no flourish.
 - Goal: any developer, including non-native speakers, reads it fast and acts on it.
 
-Also honor the repo rules: artifacts in **English**, **straight quotes** only (`"` `'`, never curly), and **no AI attribution** anywhere (no "Generated with Claude", no bot signature).
+Also: artifacts in **English**, **straight quotes** only (`"` `'`, never curly), and **no AI attribution** anywhere (no "Generated with Claude", no bot signature).
 
 ## Input
 
 The trigger carries the target, e.g.:
-- `/pr-review api 770` - repo `api`, PR `770`
-- `/pr-review admin --base origin/dev` - repo `admin`, branch diff vs `origin/dev`
-- `/pr-review eats2seats-api_ETS-1903` - a worktree, default base `origin/dev`
-- `/pr-review api --working-tree` - uncommitted work in the `api` worktree (staged + unstaged + new files vs HEAD), no PR or base needed - fits a pre-commit self-review
-- `/pr-review api --staged` - only the staged changes vs HEAD
+- `/pr-review 770` - PR `770` of the current repo
+- `/pr-review --base origin/main` - branch diff vs `origin/main` (default base is origin's default branch)
+- `/pr-review --repo ../other-repo 42` - PR `42` of another local repo (a path)
+- `/pr-review --working-tree` - uncommitted work (staged + unstaged + new files vs HEAD), no PR or base needed - fits a pre-commit self-review
+- `/pr-review --staged` - only the staged changes vs HEAD
 - add `--post` to publish inline comments on the GitHub PR (otherwise local only)
 
 `--working-tree` and `--staged` review local uncommitted work, so there is no PR to post to: ignore `--post` in those modes and just write `review.md` locally.
 
-If the repo or target is missing, ask once with AskUserQuestion. Do not guess a PR number.
+If the target is ambiguous (e.g. a bare number that may not be a PR), ask once with AskUserQuestion. Do not guess a PR number.
 
 ## Steps
 
 ### 1. Run the analyzer
 
-Build the command from the args and capture the JSON:
+Build the command from the args (the script lives at `scripts/pr-review.mjs` inside this skill's directory):
 
 ```bash
-./scripts/pr-review.mjs --repo <repo> [--pr <n> | --base <ref> | --working-tree | --staged] --json > /tmp/pr-review-<repo>-<id>.json
+node <skill-dir>/scripts/pr-review.mjs [--repo <path>] [--pr <n> | --base <ref> | --working-tree | --staged] --json
 ```
 
-The script also wrote `report.json` + `summary.md` to `<E2S_ROOT>/pr-reviews/<repo>-<id>/`, where `<id>` is `pr-<n>`, `branch-<branch>`, `worktree-<branch>`, or `staged-<branch>` depending on the mode. Read `report.json` from there (it tells you `repoDir`, `target`, `files[]`, `findings[]`, `totals`, `notes`). If `notes` lists a skipped or failed tool (e.g. eslint could not run because a worktree has no `node_modules`), mention it in the review so the gap is visible.
+The script also wrote `report.json` + `summary.md` to `<tmpdir>/pr-reviews/<repo>-<id>/` (it prints the exact path; override with `--out`), where `<id>` is `pr-<n>`, `branch-<branch>`, `worktree-<branch>`, or `staged-<branch>` depending on the mode. Read `report.json` from there (it tells you `repoDir`, `target`, `files[]`, `findings[]`, `totals`, `notes`). If `notes` lists a skipped or failed tool (e.g. eslint could not run because a worktree has no `node_modules`), mention it in the review so the gap is visible.
 
 ### 2. Read the diff and the code
 
@@ -60,7 +60,7 @@ The script also wrote `report.json` + `summary.md` to `<E2S_ROOT>/pr-reviews/<re
 
 ### 3. Write `review.md`
 
-Write it to the same report dir: `<E2S_ROOT>/pr-reviews/<repo>-<id>/review.md`. Use this shape:
+Write it to the same report dir the script printed: `<tmpdir>/pr-reviews/<repo>-<id>/review.md`. Use this shape:
 
 Do NOT write a walkthrough or a change summary - CodeRabbit already posts one, so it is just noise. Start at the findings. Use this shape:
 
@@ -143,6 +143,6 @@ After posting, give the user the PR review URL.
 
 ## Notes
 
-- The report dir lives at `<E2S_ROOT>/pr-reviews/...`, outside every git repo, so nothing dirties a worktree.
+- The report dir lives under the OS temp dir (`<tmpdir>/pr-reviews/...`), outside the repo, so nothing dirties the working tree.
 - Static tools read the working tree. For an accurate review, work from the branch's worktree (or check it out) so the code on disk matches the diff.
 - Toggles to pass through when asked: `--no-types` (skip the slow tsc pass), `--all-findings` (report everything in the changed files, not only the changed lines), `--ccn <n>` (complexity threshold).
