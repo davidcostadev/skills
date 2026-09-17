@@ -219,7 +219,7 @@ function latestPerCheck(entries) {
   const byIdentity = new Map();
 
   for (const entry of entries) {
-    const identity = `${entry.workflowName ?? ''} ${entry.name ?? entry.context ?? 'unknown'}`;
+    const identity = `${entry.workflowName ?? ''}\u0000${entry.name ?? entry.context ?? 'unknown'}`;
     const previous = byIdentity.get(identity);
     if (!previous || supersedes(entry, previous)) {
       byIdentity.set(identity, entry);

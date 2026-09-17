@@ -254,7 +254,7 @@ function groupByTicket(commits) {
 // and several callers ask for the same branch.
 const BRANCH_INDEX_CACHE = new Map();
 function branchIndex(repoDir, branch) {
-  const cacheKey = `${repoDir} ${branch}`;
+  const cacheKey = `${repoDir}\u0000${branch}`;
   const cached = BRANCH_INDEX_CACHE.get(cacheKey);
   if (cached) return cached;
   const out = git(repoDir, ['log', '--no-merges', '--format=%s', `origin/${branch}`]);
